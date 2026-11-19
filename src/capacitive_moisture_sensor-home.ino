@@ -15,18 +15,16 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // WiFi config
-const char* ssid = "TELUS7450";
-const char* password = "amoking2";
+const char* ssid = "FF417-mini_PC";
+const char* password = "FF417168";
 WiFiServer tcpServer(23);  // data logger
 WebServer webServer(80);   // webpage
 String logBuffer = "";
 String latestData = "";
-WiFiClient client;
-IPAddress local_IP(192, 168, 1, 188);  // the fixed IP
-IPAddress gateway(192, 168, 1, 254);   // router’s IP
-IPAddress subnet(255, 255, 255, 0);
-IPAddress primaryDNS(8, 8, 8, 8);
-IPAddress secondaryDNS(8, 8, 4, 4);
+WiFiClient clientToMiniPC;
+WiFiClient incomingClient;
+const char* mini_PC_ip = "192.168.137.2";
+int mini_PC_port = 5000;
 
 // capacitive moisture config
 const int moisturePin = 35;
@@ -100,10 +98,6 @@ void setup() {
     display.println("Connecting to WiFi...");
     display.display();
 
-    if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-        Serial.println("Static IP configuration failed");
-    }
-
     Serial.print("Connecting to WiFi...");
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
@@ -137,13 +131,41 @@ void setup() {
     ArduinoOTA.setPassword("Amoking2_");
     ArduinoOTA.begin();
 
-    struct tm timeinfo;
-    configTime(-7 * 3600, 0, "pool.ntp.org");
-    while (!getLocalTime(&timeinfo)) {
-        Serial.println("Waiting for time...");
-        delay(1000);
+    if (clientToMiniPC.connect(mini_PC_ip, mini_PC_port)) {
+        String timeFromPC = clientToMiniPC.readStringUntil('\n');
+        Serial.println("Received: " + timeFromPC);
+        clientToMiniPC.stop();
+
+        struct tm timeinfo;
+        int year, month, day, hour, min, sec;
+
+        if (sscanf(timeFromPC.c_str(), "%d-%d-%d %d:%d:%d",
+                   &year, &month, &day, &hour, &min, &sec) == 6) {
+            timeinfo.tm_year = year - 1900;
+            timeinfo.tm_mon = month - 1;
+            timeinfo.tm_mday = day;
+            timeinfo.tm_hour = hour;
+            timeinfo.tm_min = min;
+            timeinfo.tm_sec = sec;
+
+            time_t t = mktime(&timeinfo);
+            struct timeval tv = {.tv_sec = t};
+            settimeofday(&tv, NULL);
+
+            Serial.println("Time set OK");
+        } else {
+            Serial.println("Parse failed");
+        }
+    } else {
+        Serial.println("Connect failed");
     }
-    Serial.println("Time synced!");
+
+    struct tm timeinfo;
+    char timeStr[20];
+    if (getLocalTime(&timeinfo)) {
+        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+        Serial.println(timeStr);
+    }
 }
 
 void loop() {
@@ -154,8 +176,8 @@ void loop() {
     digitalWrite(LED_BUILTIN, LOW);
 
     // Accept new client if none is connected
-    if (!client || !client.connected()) {
-        client = tcpServer.accept();
+    if (!incomingClient || !incomingClient.connected()) {
+        incomingClient = tcpServer.accept();
     }
 
     // get mositure
@@ -167,14 +189,14 @@ void loop() {
     struct tm timeinfo;
     char timeStr[20];
     if (getLocalTime(&timeinfo)) {
-        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
     }
 
     char line[64];
     snprintf(line, sizeof(line), "%s, %d, %d\n", timeStr, raw, percent);
     // Serial & client output
-    if (client && client.connected())
-        client.printf(line);
+    if (incomingClient && incomingClient.connected())
+        incomingClient.printf(line);
 
     Serial.print(line);
 
@@ -204,7 +226,7 @@ void loop() {
 
     display.setTextSize(2);
     display.setCursor(0, 50);
-    display.println(timeStr);
+    display.println(timeStr + 11);
 
     display.display();
 
